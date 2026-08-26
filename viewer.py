@@ -75,10 +75,12 @@ class Backend(QObject):
     host_hello = Signal(int, int, bool)
     lost = Signal(str)
 
-    def __init__(self) -> None:
+    def __init__(self, port: int = 0) -> None:
         super().__init__()
         self.link: link.Link | None = None
-        self.sock = link.new_socket()
+        # A pinned port survives restarts, so a code stays valid instead of dying
+        # the moment you relaunch. 0 picks a random one.
+        self.sock = link.new_socket(port)
         self._priv, self._pubkey = crypto.generate_keypair()
         self._decoder = video.Decoder()
         self._keepalive: nat.MappingKeepalive | None = None
@@ -444,12 +446,12 @@ class VideoCanvas(QWidget):
 
 
 class ViewerWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, port: int = 0) -> None:
         super().__init__()
         self.setWindowTitle("Remote Desktop")
         self.resize(1100, 720)
 
-        self.backend = Backend()
+        self.backend = Backend(port)
         self.pages = QStackedWidget()
         self.connect_page = ConnectPage(self.backend)
         self.canvas = VideoCanvas(self.backend)
@@ -501,11 +503,13 @@ def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--code", help="the host's connection code; connects as soon as it can")
+    parser.add_argument("--port", type=int, default=0,
+                        help="pin the local UDP port so your code survives a restart")
     args, qt_args = parser.parse_known_args()
 
     app = QApplication(sys.argv[:1] + qt_args)
     app.setStyle("Fusion")
-    window = ViewerWindow()
+    window = ViewerWindow(args.port)
     if args.code:
         window.connect_page.prefill(args.code)
     window.show()

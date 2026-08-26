@@ -249,7 +249,17 @@ def punch(
     raise PunchFailed(
         f"No reply from the peer after {timeout:.0f}s and {attempts} probe rounds.\n"
         f"  Candidates tried:\n{tried}\n"
-        f"  Local port: {sock.getsockname()[1]}"
+        f"  Our local port: {sock.getsockname()[1]}\n"
+        f"\n"
+        f"  MOST LIKELY CAUSE: a stale code. Every restart binds a new random\n"
+        f"  port, so a code stops working the moment the program that printed it\n"
+        f"  is restarted. Check the ports listed above against what the peer's\n"
+        f"  own screen reports as its address right now. If they differ, the code\n"
+        f"  is from an older run -- restart both sides and swap fresh codes.\n"
+        f"  Use --port to pin a fixed port if you are restarting a lot.\n"
+        f"\n"
+        f"  Both sides must also be punching at the same time. The host only\n"
+        f"  starts once you paste the viewer's code, so do that promptly."
     )
 
 
