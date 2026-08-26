@@ -93,27 +93,6 @@ This moves a real mouse and presses real keys, so:
 * Keys held when a session ends are always released, so a dropped key-up cannot
   leave Ctrl stuck down.
 
-## The protocol
-
-UDP, every datagram sealed with ChaCha20-Poly1305, payloads capped at 1200 bytes
-so nothing is IP-fragmented.
-
-**Video** is fragmented with a frame id and fragment index. A frame missing any
-fragment is discarded and the viewer asks for a keyframe. Nothing is
-retransmitted — a late frame is worthless. Keyframes are sent only on request, so
-a clean link spends nothing on them.
-
-**Input** needs the opposite guarantee, since a lost key-up leaves a modifier
-stuck: a small sequenced/acked channel with retransmits and a reorder buffer. It
-carries a few hundred bytes a second, so this is free.
-
-Printable characters travel as **text**, not keycodes, so the two machines need
-not share a keyboard layout. Modifiers and anything with Ctrl or Alt travel as
-key events, so shortcuts still work.
-
-**Bitrate adapts** — the host climbs additively while frames land intact and
-backs off multiplicatively the moment they do not.
-
 ## Speed
 
 The host runs at the capture monitor's refresh rate: the ceiling, not a
@@ -152,25 +131,6 @@ Handled locally, never forwarded:
 | `Ctrl+Alt+F` | fullscreen |
 | `Ctrl+Alt+Q` | disconnect |
 
-## Tests
-
-```bash
-python test_selftest.py    # 20 checks: crypto, replay, fragmentation, STUN, codes, input
-python test_endtoend.py    # runs a real host.py and decodes its screen
-```
-
-The end-to-end test never sends mouse or keyboard events — that would seize the
-desktop of whoever ran it. It proves the input channel by requesting a keyframe
-and watching one come back over that path.
-
-Modules are runnable on their own:
-
-```bash
-python -m common.nat            # classify this network, print a code
-python -m common.link           # two encrypted links over loopback
-python -m common.video --show   # capture, encode and decode locally
-```
-
 ## Layout
 
 | | |
@@ -183,10 +143,3 @@ python -m common.video --show   # capture, encode and decode locally
 | `host.py` | the machine being controlled |
 | `viewer.py` | the PySide6 application |
 | `install.py` | installs dependencies, then verifies capture and encoding work |
-
-## Not built
-
-Audio, file transfer, clipboard sync and multi-monitor switching are all clean
-additions later; none change the core. UPnP port mapping is the most useful next
-step — asking your own router to open a port removes even the STUN dependency and
-rescues some of the networks above.
