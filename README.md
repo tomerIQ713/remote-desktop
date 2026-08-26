@@ -19,13 +19,25 @@ host.py                                                        viewer.py
    pynput injection  <-  reliable channel  <-------------  your input
 ```
 
-## Running it
+## Setup
+
+On each machine, from inside the repo:
 
 ```bash
-pip install av opencv-python numpy mss pynput PySide6 cryptography dxcam
+python install.py
 ```
 
-`dxcam` is Windows-only and optional; without it capture falls back to `mss`.
+That installs the dependencies and then checks the machine can actually run
+this — it grabs a real frame and opens a real encoder, because importing `mss`
+proves nothing about permissions and hardware encoders only fail at open time.
+It finishes by telling you which capture backend and which H.264 encoder you
+ended up with, and running the self-test.
+
+If you would rather do it by hand, `pip install -r requirements.txt` is the
+whole install. `dxcam` is Windows-only and optional; without it capture falls
+back to `mss`.
+
+## Running it
 
 On the machine you want to control:
 
@@ -172,6 +184,7 @@ python -m common.video --show   # capture, encode and decode locally
 | `common/video.py` | capture, H.264 encode, H.264 decode |
 | `host.py` | the machine being controlled |
 | `viewer.py` | the PySide6 application |
+| `install.py` | installs dependencies, then verifies capture and encoding work |
 
 ## Not built
 
