@@ -1,0 +1,13 @@
+# Verified working set. Loosened to minor versions so a fresh machine can
+# resolve, but these exact ones are known good.
+av>=14,<18              # H.264 encode/decode (bundles ffmpeg, no system install needed)
+opencv-python>=4.9      # scaling only
+numpy>=1.26
+mss>=9.0                # screen capture fallback, and monitor geometry everywhere
+pynput>=1.7             # input injection + kill-switch hotkey (host only)
+PySide6>=6.6            # viewer UI
+cryptography>=42        # X25519 + ChaCha20-Poly1305
+
+# Windows only, optional: DXGI Desktop Duplication capture. Much faster than
+# mss. Safe to leave out -- the host falls back automatically.
+dxcam>=0.3 ; sys_platform == "win32"
