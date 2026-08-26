@@ -277,6 +277,44 @@ def test_damaged_codes_are_refused():
         raise AssertionError(f"accepted {why} instead of reporting it")
 
 
+def test_clicking_the_video_sends_a_move_and_a_button():
+    """event.position() is a QPointF; QRect.contains refuses one and the whole
+    viewer aborts on the first click. Needs a real widget to catch it."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QEvent, QObject, QPointF, QRect, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    import viewer
+
+    app = QApplication.instance() or QApplication([])
+
+    class _Backend(viewer.Backend):
+        def __init__(self):
+            QObject.__init__(self)  # no socket, no network
+            self.link = None
+            self.control_allowed = True
+            self.sent = []
+
+        def send(self, payload):
+            self.sent.append(payload)
+
+    backend = _Backend()
+    canvas = viewer.VideoCanvas(backend)
+    canvas.resize(800, 600)
+    canvas._target = QRect(0, 0, 800, 600)  # what paintEvent sets once a frame lands
+
+    for spot, expected in (((400.0, 300.0), 2), ((799.9, 599.9), 4)):  # centre, then the far corner
+        app.sendEvent(canvas, QMouseEvent(
+            QEvent.MouseButtonPress, QPointF(*spot), QPointF(*spot),
+            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier,
+        ))
+        assert len(backend.sent) == expected, f"click at {spot} sent {len(backend.sent)} messages"
+
+    kinds = [protocol.decode_message(m)[0] for m in backend.sent[:2]]
+    assert kinds == [protocol.M_MOUSE_MOVE, protocol.M_MOUSE_BUTTON], kinds
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for test in tests:

@@ -12,7 +12,7 @@ import threading
 import time
 
 import numpy as np
-from PySide6.QtCore import QObject, QRect, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter
 from PySide6.QtWidgets import (
     QApplication,
@@ -369,7 +369,10 @@ class VideoCanvas(QWidget):
     # -- input ------------------------------------------------------------
 
     def _normalise(self, position) -> tuple[float, float] | None:
-        if self._target.isEmpty() or not self._target.contains(position):
+        # QRect.contains rejects a QPointF outright, and event.position() is one.
+        # Compare in float space: it also keeps the rightmost/bottom pixel column,
+        # which rounding to QPoint would throw away.
+        if self._target.isEmpty() or not QRectF(self._target).contains(position):
             return None
         return (
             (position.x() - self._target.x()) / self._target.width(),
