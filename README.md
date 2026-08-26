@@ -92,6 +92,10 @@ This moves a real mouse and presses real keys, so:
   mean a captured input packet cannot be replayed later.
 * Keys held when a session ends are always released, so a dropped key-up cannot
   leave Ctrl stuck down.
+* **Clipboard sync rides the same gate as input** — it only runs once you have
+  granted control, so `--view-only` and a refused prompt both disable it, and the
+  kill switch cuts it along with everything else. `--no-clipboard` keeps the
+  clipboard private while still allowing mouse and keyboard.
 
 ## Speed
 
@@ -140,6 +144,7 @@ Handled locally, never forwarded:
 | `common/nat.py` | STUN, NAT classification, connection codes |
 | `common/link.py` | hole punching and the live session |
 | `common/video.py` | capture, H.264 encode, H.264 decode |
+| `common/clipboard.py` | Win32 clipboard for the host; the viewer uses Qt's |
 | `host.py` | the machine being controlled |
 | `viewer.py` | the PySide6 application |
 | `install.py` | installs dependencies, then verifies capture and encoding work |

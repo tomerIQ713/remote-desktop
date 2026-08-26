@@ -12,7 +12,7 @@ import time
 
 from pynput import keyboard, mouse
 
-from common import crypto, link, nat, protocol, video
+from common import clipboard, crypto, link, nat, protocol, video
 
 KILL_SWITCH = "<ctrl>+<alt>+<shift>+k"
 MIN_KEYFRAME_INTERVAL = 0.5  # seconds; a keyframe costs ~6x a delta frame
@@ -47,6 +47,9 @@ for _i in range(24):
         _SPECIAL_KEYS[protocol.K_F1 + _i] = getattr(keyboard.Key, f"f{_i + 1}")
 
 _BUTTONS = [mouse.Button.left, mouse.Button.right, mouse.Button.middle]
+
+
+CLIPBOARD_POLL = 0.5  # no portable clipboard-change event exists, so poll
 
 
 class Injector:
@@ -170,6 +173,11 @@ class Host:
         self._last_keyframe = 0.0
         self._stop = threading.Event()
         self._report = (0, 0, 0)
+        # The last clipboard we either sent or applied. Without it, applying the
+        # peer's clipboard looks like a local change and gets echoed straight
+        # back, forever.
+        self._clip_seen: str | None = None
+        self._clip_rx = protocol.ClipboardAssembler()
 
     # -- connection -------------------------------------------------------
 
@@ -244,8 +252,33 @@ class Host:
             self._keyframe_wanted.set()
         elif kind == protocol.M_REPORT:
             self._report = (message[1], message[2], message[3])
+        elif kind == protocol.M_CLIPBOARD:
+            if self.args.no_clipboard or not (self.injector and self.injector.enabled):
+                return  # same gate as input: no consent, no clipboard
+            text = self._clip_rx.push(message[1], message[2])
+            if text is not None:
+                self._clip_seen = text
+                clipboard.copy(text)
         elif self.injector:
             self.injector.apply(message)
+
+    def _clipboard_loop(self) -> None:
+        """Ship local clipboard changes to the peer.
+
+        Deliberately its own thread: the capture loop has a 16.6ms budget at
+        60fps and must not wait on another process holding the clipboard open.
+        """
+        self._clip_seen = clipboard.paste()  # whatever is already there is not news
+        while not self._stop.is_set() and self.link and self.link.alive:
+            time.sleep(CLIPBOARD_POLL)
+            if not (self.injector and self.injector.enabled):
+                continue  # consent withdrawn or kill switch pressed
+            text = clipboard.paste()
+            if text is None or text == self._clip_seen:
+                continue
+            self._clip_seen = text
+            for chunk in protocol.clipboard_chunks(text):
+                self.link.send_reliable(chunk)
 
     def _capture_loop(self) -> None:
         assert self.link and self.encoder and self.capture and self.injector
@@ -316,6 +349,10 @@ class Host:
             print(f"  Kill switch: press {KILL_SWITCH.replace('<', '').replace('>', '')} to cut input instantly.")
         print("  Ctrl-C to stop.\n")
 
+        if allowed and not self.args.no_clipboard and clipboard.available:
+            threading.Thread(target=self._clipboard_loop, daemon=True, name="clipboard").start()
+            print("  Clipboard is shared both ways while control is enabled.")
+
         hotkey = None
         if allowed:
             hotkey = keyboard.GlobalHotKeys(
@@ -354,6 +391,8 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=0, help="local UDP port (0 picks one)")
     parser.add_argument("--timeout", type=float, default=90.0, help="seconds to spend punching")
     parser.add_argument("--view-only", action="store_true", help="share the screen, refuse all input")
+    parser.add_argument("--no-clipboard", action="store_true",
+                        help="allow control but keep the clipboard private")
     parser.add_argument("--yes", action="store_true", help="skip the consent prompt")
     Host(parser.parse_args()).run()
 

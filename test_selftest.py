@@ -277,6 +277,34 @@ def test_damaged_codes_are_refused():
         raise AssertionError(f"accepted {why} instead of reporting it")
 
 
+def test_clipboard_survives_chunking():
+    """A clipboard bigger than one datagram must rebuild byte-for-byte."""
+    text = "".join(chr(0x400 + (i % 200)) for i in range(4000))  # multi-byte, spans chunks
+    chunks = protocol.clipboard_chunks(text)
+    assert len(chunks) > 1, "test text is too small to exercise chunking"
+    for chunk in chunks:
+        assert len(chunk) <= protocol.MAX_PLAINTEXT, "a chunk would be IP-fragmented"
+
+    assembler = protocol.ClipboardAssembler()
+    rebuilt = None
+    for chunk in chunks:
+        kind, more, data = protocol.decode_message(chunk)
+        assert kind == protocol.M_CLIPBOARD
+        rebuilt = assembler.push(more, data)
+    assert rebuilt == text, "clipboard did not survive the round trip"
+
+
+def test_clipboard_is_bounded_in_both_directions():
+    """Neither a huge local copy nor a peer that never stops may run us out of memory."""
+    assert protocol.clipboard_chunks("x" * (protocol.CLIP_MAX + 1)) == [], "oversize clipboard was not refused"
+
+    assembler = protocol.ClipboardAssembler()
+    filler = b"z" * protocol.CLIP_CHUNK
+    for _ in range((protocol.CLIP_MAX // protocol.CLIP_CHUNK) + 5):
+        assert assembler.push(1, filler) is None  # a peer that never sets more=0
+    assert assembler._size <= protocol.CLIP_MAX, "assembler grew past its own bound"
+
+
 def test_clicking_the_video_sends_a_move_and_a_button():
     """event.position() is a QPointF; QRect.contains refuses one and the whole
     viewer aborts on the first click. Needs a real widget to catch it."""

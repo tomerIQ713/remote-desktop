@@ -31,6 +31,7 @@ from common import crypto, link, nat, protocol, video
 
 MOUSE_HZ = 60
 KEYFRAME_COOLDOWN = 0.5  # asking on every drop is what makes a bad link worse
+CLIPBOARD_POLL_MS = 500  # no portable clipboard-change event exists, so poll
 
 _QT_SPECIAL = {
     Qt.Key_Escape: protocol.K_ESC,
@@ -73,6 +74,7 @@ class Backend(QObject):
     failed = Signal(str)
     frame_ready = Signal(object)  # a BGR ndarray
     host_hello = Signal(int, int, bool)
+    clipboard_arrived = Signal(str)
     lost = Signal(str)
 
     def __init__(self, port: int = 0) -> None:
@@ -89,6 +91,10 @@ class Backend(QObject):
         self._last_dropped = 0
         self._last_keyframe_request = 0.0
         self.control_allowed = False
+        # The last clipboard we either sent or applied; without it, applying the
+        # host's clipboard reads as a local change and echoes straight back.
+        self._clip_seen: str | None = None
+        self._clip_rx = protocol.ClipboardAssembler()
 
     def gather(self) -> None:
         def work() -> None:
@@ -157,6 +163,25 @@ class Backend(QObject):
         if message[0] == protocol.M_HELLO:
             self.control_allowed = bool(message[3])
             self.host_hello.emit(message[1], message[2], self.control_allowed)
+        elif message[0] == protocol.M_CLIPBOARD and self.control_allowed:
+            text = self._clip_rx.push(message[1], message[2])
+            if text is not None:
+                self._clip_seen = text
+                self.clipboard_arrived.emit(text)  # setText must run on the GUI thread
+
+    def apply_clipboard(self, text: str) -> None:
+        QGuiApplication.clipboard().setText(text)
+
+    def poll_clipboard(self) -> None:
+        """Send our clipboard to the host when it changes. GUI thread, cheap."""
+        if not (self.link and self.control_allowed):
+            return
+        text = QGuiApplication.clipboard().text()
+        if not text or text == self._clip_seen:
+            return
+        self._clip_seen = text
+        for chunk in protocol.clipboard_chunks(text):
+            self.link.send_reliable(chunk)
 
     def _report_loop(self) -> None:
         """Tell the host what actually arrived, so it can pick a sane bitrate."""
@@ -468,6 +493,7 @@ class ViewerWindow(QMainWindow):
 
         self.backend.connected.connect(self._on_connected)
         self.backend.host_hello.connect(self._on_hello)
+        self.backend.clipboard_arrived.connect(self.backend.apply_clipboard)
         self.backend.lost.connect(self._on_lost)
         self.canvas.disconnect_requested.connect(self.close)
         self.canvas.fullscreen_requested.connect(self._toggle_fullscreen)
@@ -476,6 +502,10 @@ class ViewerWindow(QMainWindow):
         refresh = QTimer(self)  # keeps the HUD numbers moving between frames
         refresh.timeout.connect(self._refresh_hud)
         refresh.start(500)
+
+        self._clipboard_timer = QTimer(self)
+        self._clipboard_timer.timeout.connect(self.backend.poll_clipboard)
+        self._clipboard_timer.start(CLIPBOARD_POLL_MS)
 
     def _refresh_hud(self) -> None:
         if self.pages.currentWidget() is self.canvas:

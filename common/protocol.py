@@ -175,6 +175,7 @@ M_TEXT = 5
 M_KEYFRAME = 6
 M_HELLO = 7
 M_REPORT = 8
+M_CLIPBOARD = 9
 
 _M_MOVE = struct.Struct("!BHH")  # kind, x, y as fractions of 65535
 _M_BUTTON = struct.Struct("!BBB")  # kind, button, pressed
@@ -182,6 +183,12 @@ _M_SCROLL = struct.Struct("!Bbb")  # kind, dx, dy
 _M_KEY = struct.Struct("!BBI")  # kind, pressed, key id
 _M_HELLO = struct.Struct("!BHHB")  # kind, screen width, height, control allowed
 _M_REPORT = struct.Struct("!BIIH")  # kind, frames decoded, frames dropped, rtt in ms
+_M_CLIP = struct.Struct("!BB")  # kind, more-chunks-follow
+
+# The reliable channel does not fragment -- one message is one datagram -- so a
+# clipboard has to be split by hand to stay under MAX_PLAINTEXT.
+CLIP_CHUNK = 1100
+CLIP_MAX = 64 * 1024  # a channel sized for keystrokes; a copied file listing must not flood it
 
 # Key ids below 128 are the literal ASCII character to press, so no table is
 # needed for the common case. 128 and up are named keys.
@@ -215,6 +222,52 @@ def key(key_id: int, pressed: bool) -> bytes:
 def text(value: str) -> bytes:
     """Typed characters, sent as text so keyboard layouts do not have to match."""
     return bytes([M_TEXT]) + value.encode("utf-8")
+
+
+def clipboard_chunks(text: str) -> list[bytes]:
+    """Split a clipboard into reliable-channel messages.
+
+    Returns an empty list for anything over CLIP_MAX, which is the caller's
+    signal to skip the update rather than spend the input channel on it.
+    Splitting is done on the encoded bytes, so a multi-byte character may land
+    across a boundary; the far side joins before decoding, so that is fine.
+    """
+    data = text.encode("utf-8")
+    if len(data) > CLIP_MAX:
+        return []
+    out = []
+    for start in range(0, max(len(data), 1), CLIP_CHUNK):
+        piece = data[start : start + CLIP_CHUNK]
+        more = 1 if start + CLIP_CHUNK < len(data) else 0
+        out.append(_M_CLIP.pack(M_CLIPBOARD, more) + piece)
+    return out
+
+
+class ClipboardAssembler:
+    """Rebuilds a clipboard string from chunk messages.
+
+    Bounded on purpose: this runs on data from the network, and a peer that
+    never sets more=0 would otherwise grow this buffer without limit.
+    """
+
+    def __init__(self) -> None:
+        self._parts: list[bytes] = []
+        self._size = 0
+
+    def push(self, more: int, chunk: bytes) -> str | None:
+        """Return the finished text, or None while chunks are still outstanding."""
+        self._size += len(chunk)
+        if self._size > CLIP_MAX:
+            self._parts.clear()  # a peer feeding us an endless clipboard; drop it
+            self._size = 0
+            return None
+        self._parts.append(chunk)
+        if more:
+            return None
+        text = b"".join(self._parts).decode("utf-8", "replace")
+        self._parts.clear()
+        self._size = 0
+        return text
 
 
 def keyframe_request() -> bytes:
@@ -252,6 +305,10 @@ def decode_message(payload: bytes) -> tuple:
         return (kind, payload[1:].decode("utf-8", "replace"))
     if kind == M_KEYFRAME:
         return (kind,)
+    if kind == M_CLIPBOARD:
+        if len(payload) < _M_CLIP.size:
+            return (0,)
+        return (kind, payload[1], payload[_M_CLIP.size :])  # bytes; joined before decoding
     layout = _LAYOUTS.get(kind)
     if layout is None or len(payload) < layout.size:
         return (0,)
