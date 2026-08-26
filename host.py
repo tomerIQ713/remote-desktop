@@ -6,7 +6,6 @@ it prints. Nothing is shared and no input is accepted until you say yes.
 from __future__ import annotations
 
 import argparse
-import socket
 import sys
 import threading
 import time
@@ -16,6 +15,7 @@ from pynput import keyboard, mouse
 from common import crypto, link, nat, protocol, video
 
 KILL_SWITCH = "<ctrl>+<alt>+<shift>+k"
+MIN_KEYFRAME_INTERVAL = 0.5  # seconds; a keyframe costs ~6x a delta frame
 
 _SPECIAL_KEYS = {
     protocol.K_ESC: keyboard.Key.esc,
@@ -167,14 +167,14 @@ class Host:
         self.encoder: video.Encoder | None = None
         self.rates = BitrateController(args.bitrate, args.bitrate)
         self._keyframe_wanted = threading.Event()
+        self._last_keyframe = 0.0
         self._stop = threading.Event()
         self._report = (0, 0, 0)
 
     # -- connection -------------------------------------------------------
 
     def connect(self) -> link.Link:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.bind(("0.0.0.0", self.args.port))
+        sock = link.new_socket(self.args.port)
         priv, pubkey = crypto.generate_keypair()
 
         print("Probing this network...\n")
@@ -252,30 +252,50 @@ class Host:
         frame_id = 0
         interval = 1.0 / self.args.fps
         next_report = time.perf_counter() + 2.0
+        window_frames = 0
+        window_started = time.perf_counter()
+        window_idle = 0
+        encode_ms: list[float] = []
 
         while not self._stop.is_set() and self.link.alive:
             started = time.perf_counter()
             frame = self.capture.grab()
             if frame is None:
+                window_idle += 1  # nothing on screen changed; there is nothing to send
                 time.sleep(0.002)
                 continue
             if self._keyframe_wanted.is_set():
                 self._keyframe_wanted.clear()
-                self.encoder.request_keyframe()
-            for data, is_keyframe in self.encoder.encode(frame):
+                # A peer asking every frame would make us spend the whole link
+                # on keyframes, which is how the loss spiral starts.
+                if started - self._last_keyframe > MIN_KEYFRAME_INTERVAL:
+                    self._last_keyframe = started
+                    self.encoder.request_keyframe()
+            encode_started = time.perf_counter()
+            packets = self.encoder.encode(frame)
+            encode_ms.append((time.perf_counter() - encode_started) * 1000)
+            for data, is_keyframe in packets:
                 frame_id += 1
+                window_frames += 1
                 self.link.send_video(frame_id, data, is_keyframe)
 
             if started >= next_report:
                 next_report = started + 2.0
                 decoded, dropped, rtt_ms = self._report
                 self.encoder.set_bitrate(self.rates.update(decoded, dropped))
+                elapsed = started - window_started
+                sent_fps = window_frames / elapsed if elapsed else 0.0
+                median_encode = sorted(encode_ms)[len(encode_ms) // 2] if encode_ms else 0.0
+                # sent fps vs the viewer's fps says immediately which end is slow
                 print(
-                    f"  {frame_id:>6} frames | {self.encoder.name} "
-                    f"{self.encoder.bitrate // 1000:>5} kbps | rtt {rtt_ms}ms | "
-                    f"viewer dropped {dropped} | {'CONTROL' if self.injector.enabled else 'view-only'}",
+                    f"  sending {sent_fps:4.1f} fps | encode {median_encode:5.1f} ms "
+                    f"({self.encoder.name}) | {self.encoder.bitrate // 1000:>5} kbps | "
+                    f"rtt {rtt_ms}ms | idle grabs {window_idle:>4} | viewer dropped {dropped} | "
+                    f"{'CONTROL' if self.injector.enabled else 'view-only'}   ",
                     end="\r",
                 )
+                window_frames, window_idle, window_started = 0, 0, started
+                encode_ms.clear()
             time.sleep(max(0.0, interval - (time.perf_counter() - started)))
 
     def run(self) -> None:

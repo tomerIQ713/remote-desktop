@@ -18,6 +18,29 @@ Candidate = tuple[tuple[str, int], str]  # ((host, port), label for the HUD)
 PING_INTERVAL = 0.5
 LINK_TIMEOUT = 8.0
 
+# The OS default is 64KB on Windows and most Linuxes. A single keyframe can be
+# 200KB, so the default silently discards two thirds of it before the receive
+# thread ever runs, and the frame can never complete.
+SOCKET_BUFFER = 4 * 1024 * 1024
+
+# Fragments per burst before yielding. A 30-fragment delta frame goes out in one
+# go; a 166-fragment keyframe is spread out instead of slamming the narrowest
+# hop on the path, which drops the tail of the burst and costs the whole frame.
+BURST = 32
+BURST_PAUSE = 0.001
+
+
+def new_socket(port: int = 0) -> socket.socket:
+    """A UDP socket with buffers big enough for video-sized bursts."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    for option in (socket.SO_RCVBUF, socket.SO_SNDBUF):
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, option, SOCKET_BUFFER)
+        except OSError:
+            pass  # some platforms cap this; the smaller buffer still works
+    sock.bind(("0.0.0.0", port))
+    return sock
+
 
 class PunchFailed(Exception):
     """Raised with a human-readable account of everything that was tried."""
@@ -67,8 +90,15 @@ class Link:
             self.bytes_sent += len(datagram)
 
     def send_video(self, frame_id: int, encoded: bytes, keyframe: bool = False) -> None:
-        """Fire a frame off as fragments. Never retransmitted -- a late frame is useless."""
-        for part in protocol.fragment(frame_id, encoded, keyframe):
+        """Fire a frame off as fragments. Never retransmitted -- a late frame is useless.
+
+        Large frames are paced: losing any one fragment costs the entire frame,
+        so a 166-fragment keyframe sent flat out is the most fragile thing this
+        program does.
+        """
+        for index, part in enumerate(protocol.fragment(frame_id, encoded, keyframe)):
+            if index and index % BURST == 0:
+                time.sleep(BURST_PAUSE)
             self._send(part)
 
     def send_reliable(self, payload: bytes) -> None:

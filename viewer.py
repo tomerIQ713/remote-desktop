@@ -7,7 +7,6 @@ Local shortcuts, which are handled here and never forwarded to the host:
 """
 from __future__ import annotations
 
-import socket
 import sys
 import threading
 import time
@@ -31,6 +30,7 @@ from PySide6.QtWidgets import (
 from common import crypto, link, nat, protocol, video
 
 MOUSE_HZ = 60
+KEYFRAME_COOLDOWN = 0.5  # asking on every drop is what makes a bad link worse
 
 _QT_SPECIAL = {
     Qt.Key_Escape: protocol.K_ESC,
@@ -78,14 +78,14 @@ class Backend(QObject):
     def __init__(self) -> None:
         super().__init__()
         self.link: link.Link | None = None
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(("0.0.0.0", 0))
+        self.sock = link.new_socket()
         self._priv, self._pubkey = crypto.generate_keypair()
         self._decoder = video.Decoder()
         self._keepalive: nat.MappingKeepalive | None = None
         self._seen_keyframe = False
         self._decoded = 0
         self._last_dropped = 0
+        self._last_keyframe_request = 0.0
         self.control_allowed = False
 
     def gather(self) -> None:
@@ -142,7 +142,10 @@ class Backend(QObject):
         assert self.link
         if self.link.dropped_frames > self._last_dropped:
             self._last_dropped = self.link.dropped_frames
-            self.link.send_reliable(protocol.keyframe_request())
+            now = time.perf_counter()
+            if now - self._last_keyframe_request > KEYFRAME_COOLDOWN:
+                self._last_keyframe_request = now
+                self.link.send_reliable(protocol.keyframe_request())
         for frame in self._decoder.decode(encoded):
             self._decoded += 1
             self.frame_ready.emit(frame)
