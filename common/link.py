@@ -29,6 +29,20 @@ SOCKET_BUFFER = 4 * 1024 * 1024
 BURST = 32
 BURST_PAUSE = 0.001
 
+# Port prediction, for when one side sits behind a symmetric NAT (typical of
+# mobile data). That NAT picks a different external port per destination, so
+# the port in its code is the one it uses for STUN, not for us -- and our own
+# router then refuses the peer's real port because we never sent anything to it.
+# Spraying a window of ports opens our filter across the range the peer's NAT
+# is likely to have picked. Allocators are usually near-sequential, so a few
+# hundred either side of the observed port is a genuine chance rather than a
+# lottery ticket. Only starts after the honest attempt has already failed.
+SPRAY_AFTER = 8.0
+SPRAY_SPAN = 400
+SPRAY_INTERVAL = 3.0
+SPRAY_CHUNK = 64
+SPRAY_PAUSE = 0.002
+
 
 def new_socket(port: int = 0) -> socket.socket:
     """A UDP socket with buffers big enough for video-sized bursts."""
@@ -192,6 +206,32 @@ class Link:
             self._send(bytes([protocol.T_PUNCH_ACK]))  # peer is still finishing its punch
 
 
+def _spray(
+    sock: socket.socket,
+    sealer: crypto.Sealer,
+    probe: bytes,
+    candidates: Sequence[Candidate],
+) -> int:
+    """Probe a window of ports around each public candidate. Returns how many."""
+    sent = 0
+    for address, label in candidates:
+        if label != "WAN":
+            continue  # a LAN address is never port-translated, so there is nothing to predict
+        host, base = address
+        for offset in range(-SPRAY_SPAN, SPRAY_SPAN + 1):
+            port = base + offset
+            if offset == 0 or not (1 <= port <= 65535):
+                continue
+            try:
+                sock.sendto(sealer.seal(probe), (host, port))
+            except OSError:
+                continue
+            sent += 1
+            if sent % SPRAY_CHUNK == 0:
+                time.sleep(SPRAY_PAUSE)  # do not machine-gun the carrier
+    return sent
+
+
 def punch(
     sock: socket.socket,
     priv,
@@ -210,8 +250,11 @@ def punch(
     sealer, opener = crypto.Sealer(send_key), crypto.Opener(recv_key)
     labels = {address: label for address, label in candidates}
     probe = bytes([protocol.T_PUNCH])
-    deadline = time.perf_counter() + timeout
+    started = time.perf_counter()
+    deadline = started + timeout
     attempts = 0
+    sprayed = 0
+    last_spray = 0.0
 
     sock.settimeout(0.15)
     while time.perf_counter() < deadline:
@@ -221,8 +264,17 @@ def punch(
             except OSError:
                 continue
         attempts += 1
-        if on_progress and attempts % 10 == 1:
-            on_progress(f"punching... {int(deadline - time.perf_counter())}s left")
+        now = time.perf_counter()
+        if now - started > SPRAY_AFTER and now - last_spray > SPRAY_INTERVAL:
+            last_spray = now
+            sprayed += _spray(sock, sealer, probe, candidates)
+            if on_progress:
+                on_progress(
+                    f"no direct answer -- predicting ports ({sprayed} tried), "
+                    f"{int(deadline - now)}s left"
+                )
+        elif on_progress and attempts % 10 == 1:
+            on_progress(f"punching... {int(deadline - now)}s left")
 
         window = time.perf_counter() + 0.2
         while time.perf_counter() < window:

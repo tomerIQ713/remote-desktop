@@ -20,10 +20,16 @@ import threading
 import zlib
 from dataclasses import dataclass
 
+# Deliberately different operators, because the classification below is only
+# meaningful when the two probes go to genuinely different IP addresses.
+# stun.l.google.com and stun1.l.google.com resolve to the SAME address, so
+# asking both proves nothing at all -- a symmetric NAT hands out one stable
+# mapping per destination and would sail through that test.
 STUN_SERVERS = [
     ("stun.l.google.com", 19302),
-    ("stun1.l.google.com", 19302),
     ("stun.cloudflare.com", 3478),
+    ("stun.nextcloud.com", 443),
+    ("stun.sipgate.net", 3478),
 ]
 
 _MAGIC = 0x2112A442
@@ -162,23 +168,38 @@ def probe(sock: socket.socket, servers: list[tuple[str, int]] | None = None) -> 
     lan = local_address(sock)
     observations: list[tuple[str, tuple[str, int] | str]] = []
     seen: list[tuple[str, int]] = []
+    asked: set[str] = set()
 
     for server in servers:
         name = f"{server[0]}:{server[1]}"
         try:
+            address = socket.gethostbyname(server[0])
+        except OSError as exc:
+            observations.append((name, f"failed (cannot resolve: {exc})"))
+            continue
+        if address in asked:
+            # Two names for one machine tell us nothing the first already did.
+            observations.append((name, f"skipped (same server as an earlier probe, {address})"))
+            continue
+        asked.add(address)
+        try:
             result = stun_query(sock, server)
-            observations.append((name, result))
+            observations.append((f"{name} [{address}]", result))
             seen.append(result)
         except StunError as exc:
             observations.append((name, f"failed ({exc})"))
         if len(seen) >= 2:
-            break  # two agreeing samples is all the classification needs
+            break  # two samples from two different destinations decides it
 
     if not seen:
         return NatReport(None, lan, observations, "unknown -- no STUN server answered", False)
     public = seen[0]
     if len(seen) == 1:
-        return NatReport(public, lan, observations, "unverified -- only one server answered", True)
+        return NatReport(
+            public, lan, observations,
+            "UNVERIFIED -- only one server answered, so symmetric NAT cannot be ruled out",
+            True,
+        )
     if len({p for _ip, p in seen}) == 1 and len({ip for ip, _p in seen}) == 1:
         if public == lan:
             return NatReport(public, lan, observations, "open internet -- no NAT", True)
