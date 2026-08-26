@@ -165,7 +165,7 @@ class Host:
         self.capture: video.Capture | None = None
         self.injector: Injector | None = None
         self.encoder: video.Encoder | None = None
-        self.rates = BitrateController(args.bitrate, args.bitrate)
+        self.rates = BitrateController(min(5_000_000, args.bitrate), args.bitrate)
         self._keyframe_wanted = threading.Event()
         self._last_keyframe = 0.0
         self._stop = threading.Event()
@@ -346,9 +346,11 @@ def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--monitor", type=int, default=1, help="which monitor to share (1 = primary)")
-    parser.add_argument("--max-width", type=int, default=1600, help="downscale wider screens to this")
+    parser.add_argument("--max-width", type=int, default=1920,
+                        help="downscale wider screens to this; 1920 leaves 1080p untouched")
     parser.add_argument("--fps", type=int, default=60)
-    parser.add_argument("--bitrate", type=int, default=5_000_000, help="ceiling in bits per second")
+    parser.add_argument("--bitrate", type=int, default=12_000_000,
+                        help="ceiling in bits per second; the controller climbs to it only if the link holds")
     parser.add_argument("--port", type=int, default=0, help="local UDP port (0 picks one)")
     parser.add_argument("--timeout", type=float, default=90.0, help="seconds to spend punching")
     parser.add_argument("--view-only", action="store_true", help="share the screen, refuse all input")

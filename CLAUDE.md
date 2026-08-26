@@ -97,12 +97,17 @@ keep working even for injected keys.
 - `cv2.cvtColor(BGR2YUV_I420)` + `from_ndarray(yuv420p)` is 2.5ms where
   `from_ndarray(bgr24).reformat()` is 6.3ms. Pinning x264 thread count made it
   *slower*. Measure before "optimizing" this file.
+- **Do not reintroduce a downscale default.** Capturing at 1600 wide instead of
+  native 1920 measured 9 dB worse *and* 30% more bytes per frame, and no
+  bitrate recovers it. The viewer's `to_ndarray(bgr24)` is likewise already
+  faster than the cv2 equivalent (1.5ms vs 3.0ms) -- the host's cv2 win does
+  not mirror. 4:4:4 chroma is real (+5 dB, -27% bytes) but costs 60fps -> 46.
 
 ## Status
 
 Verified over LAN: 19 self-tests, end-to-end, and an offscreen Qt smoke test all
-pass; host runs 60fps at 1600x900 (the monitor's refresh rate, i.e. the
-ceiling). **The cross-internet (WAN) path has never successfully connected** —
+pass; host runs 58-60fps at native 1920x1080 (the monitor's refresh rate, i.e.
+the ceiling). **The cross-internet (WAN) path has never successfully connected** —
 that is the open item, and the README still says so. Symmetric NAT (mobile
 hotspots, CGNAT) cannot be punched; 21,600 predicted ports proved it. Test on
 ordinary Wi-Fi, not a phone.

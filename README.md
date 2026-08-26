@@ -146,10 +146,19 @@ moment they are not.
 
 ## Speed
 
-The host runs at 60 fps at 1600x900 on a machine with no hardware encoder,
-which is the refresh rate of the monitor it is capturing -- the ceiling, not a
-coincidence. Measured per frame: 11.3ms waiting for the screen's next refresh,
-5.3ms to convert and encode it.
+The host runs at the refresh rate of the monitor it is capturing -- the
+ceiling, not a coincidence. On a 1080p60 screen with no hardware encoder that
+is 58-60 fps at full 1920x1080, spending 11.1ms per frame to convert and
+encode, with the rest of the 16.6ms budget waiting for the next refresh.
+
+The default used to downscale to 1600 wide, which turned out to be the most
+expensive line in the program. Measured against the native desktop, at the
+same 5 Mbit: 1600 wide scores 26.4 dB and costs 10.5 KB a frame, while native
+1920 scores 35.7 dB and costs 7.3 KB. Downscaling was *worse on both axes* --
+the resample softens every glyph, the encoder then spends bits coding the
+mush, and no bitrate recovers it (1600 wide at 20 Mbit still only reaches 27.9
+dB, losing to native at a quarter of the bandwidth). Capture native, scale
+once at the viewer if at all.
 
 Getting there was mostly one line. The obvious way to feed a BGR frame to PyAV
 is `from_ndarray(bgr24).reformat(yuv420p)`, and swscale takes 6.3ms over it.
@@ -164,6 +173,14 @@ Deliberately not done: running capture and encode on separate threads. It looks
 like the obvious next move and the arithmetic says it lifts the ceiling to
 88fps, but capture is already just waiting for the monitor's next frame, so
 overlapping it with encoding wins nothing real.
+
+Also measured and rejected: 4:4:4 chroma, which is the textbook fix for text
+on a desktop and does deliver -- +5 dB and 27% fewer bytes than 4:2:0. It
+costs 60 fps -> 46, because the planar conversion cannot be done in under
+7.5ms against 2.6ms for I420. Resolution beats chroma by a wide margin here:
+1280 wide at 4:4:4 scores 23.2 dB, worse than anything else tried. Slower x264
+presets were rejected too -- `superfast` through `faster` all cost 2-4ms a
+frame and none beat `ultrafast` on quality at these bitrates.
 
 ## Viewer shortcuts
 
