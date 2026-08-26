@@ -347,7 +347,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--monitor", type=int, default=1, help="which monitor to share (1 = primary)")
     parser.add_argument("--max-width", type=int, default=1600, help="downscale wider screens to this")
-    parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--fps", type=int, default=60)
     parser.add_argument("--bitrate", type=int, default=5_000_000, help="ceiling in bits per second")
     parser.add_argument("--port", type=int, default=0, help="local UDP port (0 picks one)")
     parser.add_argument("--timeout", type=float, default=90.0, help="seconds to spend punching")

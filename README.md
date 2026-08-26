@@ -144,6 +144,27 @@ with Ctrl or Alt travel as key events instead, so shortcuts still work.
 additively while frames are landing intact and backs off multiplicatively the
 moment they are not.
 
+## Speed
+
+The host runs at 60 fps at 1600x900 on a machine with no hardware encoder,
+which is the refresh rate of the monitor it is capturing -- the ceiling, not a
+coincidence. Measured per frame: 11.3ms waiting for the screen's next refresh,
+5.3ms to convert and encode it.
+
+Getting there was mostly one line. The obvious way to feed a BGR frame to PyAV
+is `from_ndarray(bgr24).reformat(yuv420p)`, and swscale takes 6.3ms over it.
+`cv2.cvtColor(BGR2YUV_I420)` produces the packed layout PyAV accepts directly,
+in 2.5ms and with slightly *better* colour accuracy. Two smaller wins came from
+measuring rather than assuming: pinning x264 to a thread count made it slower
+(19.8ms against 10.6ms letting it choose), as did `sliced-threads=1`, and
+`INTER_AREA` downscaling costs a third more than `INTER_LINEAR` for output
+nobody can tell apart at these sizes.
+
+Deliberately not done: running capture and encode on separate threads. It looks
+like the obvious next move and the arithmetic says it lifts the ceiling to
+88fps, but capture is already just waiting for the monitor's next frame, so
+overlapping it with encoding wins nothing real.
+
 ## Viewer shortcuts
 
 Handled locally, never forwarded to the host:

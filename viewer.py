@@ -316,7 +316,11 @@ class VideoCanvas(QWidget):
         painter.fillRect(self.rect(), QColor(18, 18, 20))
         if self._image is not None:
             self._target = self._fit(self._image.width(), self._image.height())
-            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            # Smooth scaling costs ~2.4ms a frame and buys nothing at 1:1, which
+            # is exactly the case fullscreen on a matching monitor produces.
+            scale = self._target.width() / self._image.width()
+            if abs(scale - 1.0) > 0.02:
+                painter.setRenderHint(QPainter.SmoothPixmapTransform)
             painter.drawImage(self._target, self._image)
         else:
             painter.setPen(QColor(150, 150, 150))
