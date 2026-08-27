@@ -1,7 +1,6 @@
 # Remote Desktop
 
-A peer-to-peer remote desktop in Python. One machine shares its screen as H.264
-over UDP; the other decodes it and sends mouse and keyboard back.
+A peer-to-peer remote desktop in Python.
 
 No server of any kind — no rendezvous, no relay. The two machines swap a short
 code, punch through both NATs, and everything after that flows directly between
@@ -20,17 +19,12 @@ host.py                                                        viewer.py
 
 ## Setup
 
+Install the dependencies
 ```bash
 python install.py
 ```
 
-Installs the dependencies, then proves the machine can actually run this by
-grabbing a real frame and opening a real encoder — importing `mss` says nothing
-about permissions, and hardware encoders only fail at open time. Prints which
-capture backend and encoder you got.
-
-By hand: `pip install -r requirements.txt`. `dxcam` is Windows-only and
-optional; capture falls back to `mss`.
+OR By hand: `pip install -r requirements.txt`.
 
 ## Running it
 
@@ -39,12 +33,12 @@ python host.py     # the machine being controlled
 python viewer.py   # the machine controlling it
 ```
 
-Each side prints a connection code. Send the host's to the viewer, paste it in,
-send the viewer's code back to the host, press Enter. The codes are safe to post
-in a group chat. `python viewer.py --code RD1-...` skips the retyping.
-
-Both ends then show four words. **Check they match** — if they differ, someone
-altered a code in transit. Hang up.
+# How to connet
+Each side prints a connection code. 
+- Send the host's to the viewer, paste it in,
+- send the viewer's code back to the host, press Enter.
+- The HOST will be asked if the Allows this peer to control your mouse and keyboard,
+      press ```bash y``` to accept, and ```bash n``` to decline.
 
 ## Why the codes are the way they are
 
