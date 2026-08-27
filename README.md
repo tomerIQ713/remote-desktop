@@ -100,8 +100,8 @@ This moves a real mouse and presses real keys, so:
 ## Speed
 
 The host runs at the capture monitor's refresh rate: the ceiling, not a
-coincidence. On 1080p60 with no hardware encoder that is 58-60 fps at full
-1920x1080, 11.1ms per frame to convert and encode against a 16.6ms budget.
+coincidence. On 1080p60 with no hardware encoder that is a flat 60 fps at full
+1920x1080, 6.5ms per frame to convert and encode against a 16.6ms budget.
 
 **Do not downscale.** The old 1600-wide default was the most expensive line in
 the program. Against the native desktop at 5 Mbit, 1600 wide scores 26.4 dB at
@@ -110,9 +110,30 @@ resample softens every glyph and the encoder then spends bits coding the mush.
 No bitrate recovers it: 1600 at 20 Mbit reaches only 27.9 dB, losing to native
 at a quarter of the bandwidth.
 
-The other big win was one line: `cv2.cvtColor(BGR2YUV_I420)` hands PyAV the
-packed layout directly in 2.5ms, where `from_ndarray(bgr24).reformat()` puts
-swscale on the critical path at 6.3ms.
+**Never strip the alpha channel.** The screen arrives as BGRA from both DXGI and
+mss, and every way of removing it costs more than keeping it. Asking dxcam for
+BGR buys a `cvtColor` per frame the encoder immediately undoes (3.8ms); slicing
+`[:, :, :3]` off an mss grab is worse, because the strided view it leaves has to
+be repacked (11.4ms). `BGRA2YUV_I420` straight from the capture buffer is 1.4ms.
+Writing that into the encoder's own reused frame rather than through
+`from_ndarray` saves another 1.9ms of allocate-and-copy. 5.6ms a frame down to
+1.0ms, and cv2 does the conversion about three times faster than swscale either
+way.
+
+**The viewer's decoder must use slice threading, not `AUTO`.** libavcodec's
+frame-level threading is a pipeline: it swallows the first `threads - 1` frames,
+then returns the frame from that many calls ago. Measured at 8 frames here, so
+the picture ran a constant 133ms late while the fps counter and the ping RTT both
+looked perfect — neither can see it. `SLICE` removes all of it and decodes
+faster as well (0.89ms against 1.17ms), because x264 emits sliced frames anyway.
+
+**`bit_rate` on its own is an average, not a ceiling.** Adding `maxrate` and a
+six-frame `bufsize` bounds what any one frame may spend, which matters more here
+than in a file: losing a single fragment costs the entire frame, so a 46-fragment
+keyframe is 46 chances to lose it. That halves, at identical measured quality —
+36.50 dB against 36.53 at 5 Mbit. Re-enabling `cabac`, the one thing `ultrafast`
+gives up that is worth paying for, is free in both directions: +0.5 dB and 5%
+fewer bytes for no measurable encode time.
 
 Measured and rejected, so nobody retries them:
 
@@ -124,6 +145,7 @@ Measured and rejected, so nobody retries them:
 | x264 `superfast`..`faster` | 2-4ms a frame each, none beats `ultrafast` here |
 | pinned x264 thread count | 19.8ms against 10.6ms letting it choose |
 | `INTER_AREA` downscaling | a third slower than `INTER_LINEAR`, indistinguishable output |
+| `8x8dct` on top of `cabac` | +0.01 dB, which is nothing, for real encode time |
 
 ## Viewer shortcuts
 

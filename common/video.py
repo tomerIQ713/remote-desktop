@@ -22,11 +22,19 @@ _ENCODERS: list[tuple[str, dict[str, str]]] = [
     ("h264_nvenc", {"preset": "p1", "tune": "ull", "zerolatency": "1", "delay": "0", "rc": "cbr"}),
     ("h264_qsv", {"preset": "veryfast", "low_power": "1"}),
     ("h264_amf", {"usage": "ultralowlatency", "quality": "speed"}),
-    ("libx264", {"preset": "ultrafast", "tune": "zerolatency"}),
+    # cabac=1 undoes the one part of `ultrafast` worth paying for: it is +0.5 dB
+    # and 5% fewer bytes on screen text, for no measurable encode time.
+    ("libx264", {"preset": "ultrafast", "tune": "zerolatency", "x264-params": "cabac=1"}),
 ]
 
 # Long GOP: keyframes are requested by the viewer when it actually loses a frame.
 GOP = 600
+
+# VBV window, in frames. Without one, x264 spends whatever a hard frame needs and a
+# keyframe lands as a 46-fragment burst -- and losing any single fragment costs the
+# whole frame. Six frames of slack halves every burst at the same measured quality
+# (36.50 dB against 36.53 at 5 Mbit); tighter than that starts costing real picture.
+VBV_FRAMES = 6
 
 
 def _even(n: int) -> int:
@@ -49,6 +57,14 @@ class Encoder:
         self.bitrate = bitrate
         self._pts = 0
         self._force_keyframe = True  # the first frame must be one
+        # Converted into, and encoded from, the same two buffers every frame.
+        self._scratch = np.empty((self.height * 3 // 2, self.width), dtype=np.uint8)
+        self._frame = av.VideoFrame(self.width, self.height, "yuv420p")
+        self._frame.time_base = Fraction(1, self.fps)
+        self._planes = [
+            np.frombuffer(plane, dtype=np.uint8).reshape(-1, plane.line_size)
+            for plane in self._frame.planes
+        ]
         self.name, self._ctx = self._open(codec)
 
     def _open(self, codec: str | None) -> tuple[str, av.CodecContext]:
@@ -76,21 +92,40 @@ class Encoder:
         ctx.time_base = Fraction(1, self.fps)
         ctx.gop_size = GOP
         ctx.max_b_frames = 0  # B-frames would add a frame of reorder delay
-        ctx.options = options
+        # maxrate/bufsize are what actually enforce --bitrate: `bit_rate` on its own
+        # is an average x264 is free to overshoot on any single frame.
+        ctx.options = dict(
+            options,
+            maxrate=str(self.bitrate),
+            bufsize=str(max(self.bitrate * VBV_FRAMES // self.fps, self.bitrate // 30)),
+        )
         return ctx
 
-    def _to_av(self, bgr: np.ndarray, pts: int) -> av.VideoFrame:
-        """BGR -> yuv420p, the single hottest step in the whole host pipeline.
+    def _to_av(self, image: np.ndarray, pts: int) -> av.VideoFrame:
+        """Capture buffer -> yuv420p, the single hottest step in the host pipeline.
 
-        cv2 does this conversion roughly three times faster than swscale, and
-        marginally more accurately. PyAV takes the packed I420 layout straight
-        from cv2, so the separate reformat pass is gone.
+        Three things are deliberately absent. Alpha is never stripped: the screen
+        arrives as BGRA and cv2 goes straight from that to I420, where routing via
+        BGR costs 2.4ms a frame for nothing. swscale is not involved: cv2 is about
+        three times faster and marginally more accurate. And from_ndarray is gone,
+        because it allocated 3MB and copied the result a second time -- the
+        conversion writes into the encoder's own frame instead.
+
+        ponytail: that frame is reused every call, which is only safe because
+        `tune=zerolatency` means nothing here holds a picture past the encode call.
+        An encoder with lookahead or B-frames would need a fresh frame each time.
         """
-        i420 = cv2.cvtColor(bgr, cv2.COLOR_BGR2YUV_I420)
-        frame = av.VideoFrame.from_ndarray(i420, format="yuv420p")
-        frame.pts = pts
-        frame.time_base = Fraction(1, self.fps)
-        return frame
+        code = cv2.COLOR_BGRA2YUV_I420 if image.shape[2] == 4 else cv2.COLOR_BGR2YUV_I420
+        cv2.cvtColor(image, code, dst=self._scratch)
+        luma, blue, red = self._planes
+        half = self.width // 2
+        luma[:, : self.width] = self._scratch[: self.height]
+        # I420 packs U then V after Y, both at half resolution, in raster order.
+        chroma = self._scratch[self.height :].reshape(-1, half)
+        blue[:, :half] = chroma[: self.height // 2]
+        red[:, :half] = chroma[self.height // 2 :]
+        self._frame.pts = pts
+        return self._frame
 
     def request_keyframe(self) -> None:
         """Ask for an IDR on the next frame; the viewer calls this after packet loss."""
@@ -112,9 +147,9 @@ class Encoder:
             bgr = cv2.resize(bgr, (self.width, self.height), interpolation=cv2.INTER_LINEAR)
         frame = self._to_av(bgr, self._pts)
         self._pts += 1
-        if self._force_keyframe:
-            frame.pict_type = PictureType.I
-            self._force_keyframe = False
+        # Stated both ways round: a reused frame would otherwise stay an IDR forever.
+        frame.pict_type = PictureType.I if self._force_keyframe else PictureType.NONE
+        self._force_keyframe = False
         return [(bytes(p), bool(p.is_keyframe)) for p in self._ctx.encode(frame)]
 
     def close(self) -> None:
@@ -125,11 +160,20 @@ class Encoder:
 
 
 class Decoder:
-    """Decodes Annex-B H.264 packets back to BGR frames."""
+    """Decodes Annex-B H.264 packets back to BGR frames.
+
+    SLICE threading, never AUTO. AUTO gives libavcodec frame-level threading,
+    which is a pipeline: it swallows the first `threads - 1` frames, and from then
+    on hands back the frame from that many calls ago. Measured at 8 frames here,
+    so the picture ran a constant 133ms behind at 60fps -- invisible in the fps
+    counter and invisible in the ping RTT, which is how it survived this long.
+    x264 emits sliced frames anyway, so SLICE still uses every core: it decoded
+    faster than AUTO as well as instantly.
+    """
 
     def __init__(self) -> None:
         self._ctx = av.CodecContext.create("h264", "r")
-        self._ctx.thread_type = "AUTO"
+        self._ctx.thread_type = "SLICE"
 
     def decode(self, data: bytes) -> list[np.ndarray]:
         try:
@@ -141,7 +185,7 @@ class Decoder:
     def reset(self) -> None:
         """Drop decoder state after a gap, so stale references cannot smear."""
         self._ctx = av.CodecContext.create("h264", "r")
-        self._ctx.thread_type = "AUTO"
+        self._ctx.thread_type = "SLICE"
 
 
 class Capture:
@@ -167,7 +211,9 @@ class Capture:
         try:
             import dxcam
 
-            self._dxcam = dxcam.create(output_idx=monitor - 1, output_color="BGR")
+            # BGRA is what DXGI hands over; asking for BGR makes dxcam run a
+            # cvtColor per frame that the encoder then has to undo anyway.
+            self._dxcam = dxcam.create(output_idx=monitor - 1, output_color="BGRA")
             if self._dxcam is not None:
                 self._dxcam.start(target_fps=0, video_mode=False)
                 self.backend = "dxcam (DXGI)"
@@ -194,7 +240,9 @@ class Capture:
         if self._dxcam is not None:
             return self._dxcam.get_latest_frame()
         shot = self._mss.grab(self._monitor_rect)
-        return np.asarray(shot)[:, :, :3]  # BGRA -> BGR
+        # Kept BGRA, and kept contiguous. The `[:, :, :3]` this used to end with
+        # made a strided view that cv2 then had to repack, at 11ms a frame.
+        return np.asarray(shot)
 
     def _scale(self, frame: np.ndarray) -> np.ndarray:
         height, width = frame.shape[:2]
