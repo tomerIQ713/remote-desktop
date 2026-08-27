@@ -133,13 +133,16 @@ class Encoder:
 
     def set_bitrate(self, bitrate: int) -> None:
         """Retarget the encoder. Rebuilds the context, so only call on real changes."""
-        # ponytail: rebuilding is a ~5ms hiccup. Switch to per-frame rate control
-        # (ctx.rc_max_rate / nvenc reconfigure) only if that hiccup shows up in practice.
+        # A live retarget is not on offer: setting ctx.bit_rate on an open context
+        # is silently ignored (measured -- the frames do not change size), so the
+        # context has to be rebuilt. What it does not need is _open's probe encode,
+        # which costs 7ms of the 15 re-proving a codec that is already running, and
+        # which resets _pts -- rewinding the clock x264 does its rate control on.
         if abs(bitrate - self.bitrate) < self.bitrate * 0.15:
             return
         self.bitrate = max(200_000, bitrate)
-        self.name, self._ctx = self._open(self.name)
-        self._force_keyframe = True
+        self._ctx = self._configure(self.name, dict(_ENCODERS).get(self.name, {}))
+        self._force_keyframe = True  # a fresh context shares no reference frames
 
     def encode(self, bgr: np.ndarray) -> list[tuple[bytes, bool]]:
         """Encode one BGR frame. Returns (annex-b bytes, is_keyframe) per packet."""
