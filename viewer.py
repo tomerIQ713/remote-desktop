@@ -33,6 +33,22 @@ MOUSE_HZ = 60
 KEYFRAME_COOLDOWN = 0.5  # asking on every drop is what makes a bad link worse
 CLIPBOARD_POLL_MS = 500  # no portable clipboard-change event exists, so poll
 
+# The one control that stays on screen when the HUD is hidden, so there is always
+# a way back without knowing the shortcut. Fixed position: the "+" has to appear
+# exactly where the "-" was.
+HUD_TOGGLE = QRect(12, 12, 18, 18)
+HUD_TOP = HUD_TOGGLE.bottom() + 6
+
+
+def _size(kilobytes: float) -> str:
+    """KB, then MB, then GB. A 12 Mbit session really does reach GB in an hour."""
+    if kilobytes < 1024:
+        return f"{kilobytes:.0f} KB"
+    if kilobytes < 1024 * 1024:
+        return f"{kilobytes / 1024:.1f} MB"
+    return f"{kilobytes / (1024 * 1024):.2f} GB"
+
+
 _QT_SPECIAL = {
     Qt.Key_Escape: protocol.K_ESC,
     Qt.Key_Tab: protocol.K_TAB,
@@ -317,6 +333,7 @@ class VideoCanvas(QWidget):
         self._image: QImage | None = None
         self._target = QRect()
         self._show_hud = True
+        self._swallow_release = False  # a click on the toggle must not reach the host
         self._last_mouse = 0.0
         self._frame_times: list[float] = []
         self.path = ""
@@ -352,6 +369,13 @@ class VideoCanvas(QWidget):
             painter.drawText(self.rect(), Qt.AlignCenter, "waiting for the first keyframe...")
         if self._show_hud:
             self._paint_hud(painter)
+        self._paint_toggle(painter)
+
+    def _paint_toggle(self, painter: QPainter) -> None:
+        painter.fillRect(HUD_TOGGLE, QColor(0, 0, 0, 170))
+        painter.setPen(QColor(220, 220, 220))
+        painter.setFont(QFont("Consolas", 11))
+        painter.drawText(HUD_TOGGLE, Qt.AlignCenter, "-" if self._show_hud else "+")
 
     def _fit(self, width: int, height: int) -> QRect:
         """Largest centred rect with the remote aspect ratio -- no stretching."""
@@ -374,22 +398,23 @@ class VideoCanvas(QWidget):
             f"words     {self.fingerprint}",
             f"fps       {fps:5.1f}",
             f"rtt       {stats['rtt_ms']} ms",
-            f"received  {stats['recv_kb']} KB",
+            f"received  {_size(stats['recv_kb'])}",
             f"dropped   {stats['dropped_frames']} frames",
             f"resends   {stats['retransmits']}",
             f"refused   {stats['rejected']} packets",
             f"input     {'enabled' if self.control_allowed else 'VIEW ONLY'}",
         ]
+        help_line = "Ctrl+Alt+H hud  F fullscreen  Q quit"
         painter.setFont(QFont("Consolas", 9))
         metrics = painter.fontMetrics()
-        width = max(metrics.horizontalAdvance(line) for line in lines) + 20
-        height = metrics.height() * len(lines) + 16
-        painter.fillRect(QRect(12, 12, width, height), QColor(0, 0, 0, 170))
+        width = max(metrics.horizontalAdvance(line) for line in lines + [help_line]) + 20
+        height = metrics.height() * (len(lines) + 1) + 16
+        painter.fillRect(QRect(12, HUD_TOP, width, height), QColor(0, 0, 0, 170))
         painter.setPen(QColor(220, 220, 220))
         for index, line in enumerate(lines):
-            painter.drawText(22, 28 + index * metrics.height(), line)
+            painter.drawText(22, HUD_TOP + 16 + index * metrics.height(), line)
         painter.setPen(QColor(120, 120, 120))
-        painter.drawText(22, 28 + len(lines) * metrics.height(), "Ctrl+Alt+H hud  F fullscreen  Q quit")
+        painter.drawText(22, HUD_TOP + 16 + len(lines) * metrics.height(), help_line)
 
     # -- input ------------------------------------------------------------
 
@@ -415,6 +440,12 @@ class VideoCanvas(QWidget):
 
     def mousePressEvent(self, event) -> None:
         self.setFocus()
+        # QRectF, because event.position() is a QPointF and QRect.contains refuses one.
+        if QRectF(HUD_TOGGLE).contains(event.position()):
+            self._show_hud = not self._show_hud
+            self._swallow_release = True  # or the host gets a button-up it never saw pressed
+            self.update()
+            return
         button = _QT_BUTTONS.get(event.button())
         spot = self._normalise(event.position())
         if button is not None and spot:
@@ -422,6 +453,9 @@ class VideoCanvas(QWidget):
             self.backend.send(protocol.mouse_button(button, True))
 
     def mouseReleaseEvent(self, event) -> None:
+        if self._swallow_release:
+            self._swallow_release = False
+            return
         button = _QT_BUTTONS.get(event.button())
         if button is not None:
             self.backend.send(protocol.mouse_button(button, False))

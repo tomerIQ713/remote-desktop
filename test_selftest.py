@@ -305,12 +305,10 @@ def test_clipboard_is_bounded_in_both_directions():
     assert assembler._size <= protocol.CLIP_MAX, "assembler grew past its own bound"
 
 
-def test_clicking_the_video_sends_a_move_and_a_button():
-    """event.position() is a QPointF; QRect.contains refuses one and the whole
-    viewer aborts on the first click. Needs a real widget to catch it."""
+def _offscreen_canvas():
+    """A real VideoCanvas with a recording backend, and no socket behind it."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtCore import QEvent, QObject, QPointF, QRect, Qt
-    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtCore import QObject, QRect
     from PySide6.QtWidgets import QApplication
 
     import viewer
@@ -331,6 +329,17 @@ def test_clicking_the_video_sends_a_move_and_a_button():
     canvas = viewer.VideoCanvas(backend)
     canvas.resize(800, 600)
     canvas._target = QRect(0, 0, 800, 600)  # what paintEvent sets once a frame lands
+    return app, backend, canvas
+
+
+def test_clicking_the_video_sends_a_move_and_a_button():
+    """event.position() is a QPointF; QRect.contains refuses one and the whole
+    viewer aborts on the first click. Needs a real widget to catch it."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    app, backend, _canvas = _offscreen_canvas()
+    canvas = _canvas
 
     for spot, expected in (((400.0, 300.0), 2), ((799.9, 599.9), 4)):  # centre, then the far corner
         app.sendEvent(canvas, QMouseEvent(
@@ -341,6 +350,33 @@ def test_clicking_the_video_sends_a_move_and_a_button():
 
     kinds = [protocol.decode_message(m)[0] for m in backend.sent[:2]]
     assert kinds == [protocol.M_MOUSE_MOVE, protocol.M_MOUSE_BUTTON], kinds
+
+
+def test_hud_toggle_flips_without_touching_the_host():
+    """The -/+ has to work on its own, and must not move the remote mouse."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    import viewer
+
+    app, backend, canvas = _offscreen_canvas()
+    spot = QPointF(viewer.HUD_TOGGLE.center())
+    for expected in (False, True):  # click it off, then back on
+        for kind, buttons in ((QEvent.MouseButtonPress, Qt.LeftButton),
+                              (QEvent.MouseButtonRelease, Qt.NoButton)):
+            app.sendEvent(canvas, QMouseEvent(kind, spot, spot, Qt.LeftButton, buttons, Qt.NoModifier))
+        assert canvas._show_hud is expected, f"toggle did not land on {expected}"
+    assert backend.sent == [], "the toggle leaked input to the host"
+
+
+def test_transfer_size_stops_reading_in_kilobytes():
+    import viewer
+
+    assert viewer._size(0) == "0 KB"
+    assert viewer._size(1023) == "1023 KB"
+    assert viewer._size(1024) == "1.0 MB"
+    assert viewer._size(1536) == "1.5 MB"
+    assert viewer._size(1024 * 1024) == "1.00 GB"
 
 
 if __name__ == "__main__":
