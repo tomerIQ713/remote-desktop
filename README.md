@@ -38,7 +38,7 @@ Each side prints a connection code.
 - Send the host's to the viewer, paste it in,
 - send the viewer's code back to the host, press Enter.
 - The HOST will be asked if the Allows this peer to control your mouse and keyboard,
-      press ```bash y``` to accept, and ```bash n``` to decline.
+      press ```y``` to accept, and ```n``` to decline.
 
 ## Why the codes are the way they are
 
